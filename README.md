@@ -56,13 +56,15 @@ AWS_PROFILE=my_profile python3 rdscli.py ...
 The secret in Secrets Manager with RDS credentials is expected to be a JSON object with this format:
 ```json
 {
-  "host": "my-database-endpoint.us-west-2.rds.amazonaws.com",
-  "dbname": "mydbname",
-  "username": "...",
-  "password": "..."
+    "engine": "mysql",
+    "username": "...",
+    "password": "..."
+    "host": "my-database-endpoint.us-west-2.rds.amazonaws.com",
+    "dbname": "myDatabase",
+    "port": "3306"
 }
 ```
-which is a standard format for RDS secrets. (There is usually a `"engine": "mysql"` attribute too but it is ignored).
+which is a standard format for RDS secrets. Note that `engine` and `port` are currently not required and ignored.
 
 ## Implementation
 
