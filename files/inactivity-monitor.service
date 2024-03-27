@@ -1,0 +1,12 @@
+[Unit]
+Description=SSM session inactivity monitor
+After=network-online.target
+
+[Service]
+ExecStart=/root/inactivity-monitor.sh
+
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
