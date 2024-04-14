@@ -2,10 +2,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: TCP port proxy
 
-# TODO: good naming for resources
-# TODO: tags!
-# TODO: IAM permissions not to * but to actual resources
-
 Parameters:
 
   StackId:
@@ -75,13 +71,12 @@ Resources:
                 Action:
                   - autoscaling:SetDesiredCapacity
                   - autoscaling:CreateOrUpdateTags
+                Resource:
+                  - !Sub "arn:aws:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${ProxyAutoScalingGroup}"
+              - Effect: Allow
+                Action:
                   - autoscaling:DescribeTags
-                # TODO! limit to our ASG. It does not have ARN! https://stackoverflow.com/questions/53457474/aws-cloudformation-error-template-validation-error-template-error-resource-no#53457579
-                # UPDATE_FAILED Requested attribute Arn does not exist in schema for AWS::AutoScaling::AutoScalingGroup
-                # So maybe need to add tag-based conditions
                 Resource: "*"
-#                Resource: !GetAtt ProxyAutoScalingGroup.Arn
-#                Resource: "arn:aws:autoscaling:eu-west-1:111111111111:autoScalingGroup:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:autoScalingGroupName/dmitry-test-ProxyAutoScalingGroup-xxxxxxxxxxxx"
 
         - PolicyName: cloudwatch
           PolicyDocument:
@@ -94,8 +89,8 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
 #                  - cloudwatch:PutMetricData
-                Resource: "*"
-#                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tcp-proxy-control-${StackId}:*"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tcp-proxy-control-${StackId}:*"
 
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
@@ -162,8 +157,8 @@ Resources:
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
-                # TODO: allow only our lambda
-                Resource: "*"
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:tcp-proxy-control-${StackId}"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
@@ -176,22 +171,14 @@ Resources:
   ProxyAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-#      AvailabilityZones: ???
       LaunchTemplate:
         LaunchTemplateId: !Ref ProxyLaunchTemplate
         Version: !GetAtt ProxyLaunchTemplate.LatestVersionNumber
       MinSize: 0
       DesiredCapacity: 1
       MaxSize: 1
-#      TargetGroupARNs:
-#      - !Ref DeviceFirmwareRegistryPublicTargetGroup
-#      - !Ref DeviceFirmwareRegistryInternalTargetGroup
-
       VPCZoneIdentifier:
         - !Ref SubnetId
-
-#      HealthCheckType: EC2
-#      HealthCheckGracePeriod: 300
       Tags:
       - Key: Role
         Value: tcp-proxy

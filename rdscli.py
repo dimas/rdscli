@@ -73,7 +73,9 @@ def ensure_stack(stack_name, template, parameters):
 
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/cloudformation/client/create_stack.html
 
-        r = cf_client.create_stack(
+        print(f'Creating stack {stack_name}')
+
+        cf_client.create_stack(
             StackName=stack_name,
             TemplateBody=template,
             Parameters=parameters,
@@ -81,14 +83,12 @@ def ensure_stack(stack_name, template, parameters):
             Capabilities=['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'],
         )
 
-        print(f'create_stack => {r}')
-
         waiter = cf_client.get_waiter('stack_create_complete')
 
     else:
 
         # Stack already exists, update it
-        print(f"Stack {stack_name} already exists, attempting to update...")
+        print(f'Stack {stack_name} already exists, updating')
 
         try:
             r = cf_client.update_stack(
@@ -97,8 +97,6 @@ def ensure_stack(stack_name, template, parameters):
                 Parameters=parameters,
                 Capabilities=['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'],
             )
-
-            print(f'update_stack => {r}')
 
             waiter = cf_client.get_waiter('stack_update_complete')
 
@@ -109,7 +107,7 @@ def ensure_stack(stack_name, template, parameters):
             print(f"Stack {stack_name} is up to date.")
             return
 
-    print("...waiting for stack to be ready...")
+    print("Waiting for stack to be ready...")
     waiter.wait(
         StackName=stack_name,
         WaiterConfig={
