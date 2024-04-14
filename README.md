@@ -36,7 +36,8 @@ You will need:
 2. Boto3 - AWS SDK for Python - https://github.com/boto/boto3
 3. AWS CLI (`aws` command line tool) - https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 4. Session Manager plugin for `aws` - https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
-5. `mysql` command-line client
+5. `pip3 install dnspython`
+6. `mysql` command-line client
 
 ## Use
 

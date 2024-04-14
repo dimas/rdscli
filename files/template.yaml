@@ -1,0 +1,212 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: TCP port proxy
+
+# TODO: good naming for resources
+# TODO: tags!
+# TODO: IAM permissions not to * but to actual resources
+
+Parameters:
+
+  StackId:
+    Type: String
+    Description: Unique identifier for this stack in case more than one needs to be deployed.
+
+  ImageId:
+    Type: String
+    Description: The AMI ID for the proxy EC2 instance
+
+  SubnetId:
+    Type: String
+    Description: Subnet to place proxy EC2 instance, needs to be routable to talk to SSM
+
+  SecurityGroupId:
+    Type: String
+    Description: ID of a security group for EC2 instance with necessary permissions to talk to SSM
+
+Resources:
+
+  ProxyLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "tcp-proxy-${StackId}"
+      LaunchTemplateData:
+        ImageId: !Ref ImageId
+        InstanceInitiatedShutdownBehavior: terminate
+        SecurityGroupIds:
+          - !Ref SecurityGroupId
+        IamInstanceProfile:
+          Arn: !GetAtt ProxyInstanceProfile.Arn
+        InstanceMarketOptions:
+          MarketType: spot
+        InstanceType: t3a.nano
+
+#        TagSpecifications:
+#          - ResourceType: instance
+#            Tags:
+#              - Key: Name
+#                Value: !Sub "tcp-proxy-${StackId}"
+#              - Key: Role
+#                Value: tcp-proxy
+        UserData:
+          Fn::Base64:
+            !Sub |
+              {{INCLUDE:setup-inactivity-monitor.sh}}
+
+  ProxyControlLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "tcp-proxy-lambda-${StackId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+        - PolicyName: ASG
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - autoscaling:SetDesiredCapacity
+                  - autoscaling:CreateOrUpdateTags
+                  - autoscaling:DescribeTags
+                # TODO! limit to our ASG. It does not have ARN! https://stackoverflow.com/questions/53457474/aws-cloudformation-error-template-validation-error-template-error-resource-no#53457579
+                # UPDATE_FAILED Requested attribute Arn does not exist in schema for AWS::AutoScaling::AutoScalingGroup
+                # So maybe need to add tag-based conditions
+                Resource: "*"
+#                Resource: !GetAtt ProxyAutoScalingGroup.Arn
+#                Resource: "arn:aws:autoscaling:eu-west-1:111111111111:autoScalingGroup:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:autoScalingGroupName/dmitry-test-ProxyAutoScalingGroup-xxxxxxxxxxxx"
+
+        - PolicyName: cloudwatch
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  # If lambda scheduled invocation triggers while stack is being deleted and log group is already gone,
+                  # lambda may re-create its log group given it has permissions. So do not grant lamda logs:CreateLogGroup.
+                  # Instead, log group is pre-created for it in this stack.
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+#                  - cloudwatch:PutMetricData
+                Resource: "*"
+#                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tcp-proxy-control-${StackId}:*"
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/tcp-proxy-control-${StackId}"
+      RetentionInDays: 90
+
+  ProxyControlLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "tcp-proxy-control-${StackId}"
+      Code:
+        ZipFile: !Sub |
+            {{INCLUDE:control_lambda.py}}
+      LoggingConfig:
+        LogGroup: !Ref LogGroup
+
+      Environment:
+        Variables:
+          AUTOSCALING_GROUP: !Ref ProxyAutoScalingGroup
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt ProxyControlLambdaRole.Arn
+      Runtime: python3.11
+      Timeout: 300
+
+
+  ControlLambdaSchedulingPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ProxyControlLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CleanupSchedule.Arn
+
+  CleanupSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Id: CleanupLambdaShedule
+          Arn: !GetAtt ProxyControlLambda.Arn
+          Input: '{"Action": "cleanup"}'
+
+  ProxyInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "tcp-proxy-instance-${StackId}"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                # TODO: allow only our lambda
+                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  ProxyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ProxyInstanceRole
+
+  ProxyAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+#      AvailabilityZones: ???
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ProxyLaunchTemplate
+        Version: !GetAtt ProxyLaunchTemplate.LatestVersionNumber
+      MinSize: 0
+      DesiredCapacity: 1
+      MaxSize: 1
+#      TargetGroupARNs:
+#      - !Ref DeviceFirmwareRegistryPublicTargetGroup
+#      - !Ref DeviceFirmwareRegistryInternalTargetGroup
+
+      VPCZoneIdentifier:
+        - !Ref SubnetId
+
+#      HealthCheckType: EC2
+#      HealthCheckGracePeriod: 300
+      Tags:
+      - Key: Role
+        Value: tcp-proxy
+        PropagateAtLaunch: true
+      - Key: Name
+        Value: !Sub "tcp-proxy - ${StackId}"
+        PropagateAtLaunch: true
+
+Outputs:
+
+  ControlLambdaFunction:
+    Value: !Ref ProxyControlLambda
+    Description: Control lambda function name
+
+  AutoScalingGroup:
+    Value: !Ref ProxyAutoScalingGroup
+    Description: ASG with proxy instance
+

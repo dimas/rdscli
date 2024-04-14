@@ -8,6 +8,10 @@ import json
 import shlex
 import os
 import argparse
+import sys
+
+# Amazon Linux 2
+DEFAULT_PROXY_AMI = 'ami-01d7b3abeb9d86b41'
 
 # TODO
 # botocore.exceptions.ClientError: An error occurred (ValidationError) when calling the UpdateStack operation: Stack:arn:aws:cloudformation:eu-west-1:..... is in ROLLBACK_COMPLETE state and can not be updated.
@@ -16,10 +20,28 @@ import argparse
 # TODO: when stack fails to update:
 # botocore.exceptions.WaiterError: Waiter StackUpdateComplete failed: Waiter encountered a terminal failure state: For expression "Stacks[].StackStatus" we matched expected path: "UPDATE_ROLLBACK_COMPLETE" at least once
 
-ssm_client = boto3.client('ssm')  
-cf_client = boto3.client('cloudformation')  
-autoscaling_client = boto3.client('autoscaling')
+# TODO: terminated instance while still marked InService in ASG, running command results in
+# botocore.exceptions.WaiterError: Waiter CommandExecuted failed: Max attempts exceeded. Previously accepted state: For expression "Status" we matched expected path: "Pending"
 
+# TODO:
+# Tunnel ready. Local port: None
+# (no idea how I got to this state. redeployed stack, probably instances were restarting)
+# ah! `aws ssm` failed with:
+#   Setting up data channel with id dmitry.andrianov-0b03f8eab18ff00ca failed: failed to create websocket for datachannel with error: CreateDataChannel failed with no output or error: createDataChannel request failed: unexpected response from the service Server authentication failed: <UnauthorizedRequest><message>Forbidden.</message></UnauthorizedRequest>
+
+
+ssm_client = None
+cf_client = None
+autoscaling_client = None
+rds_client = None
+
+def init_clients():
+    global ssm_client, cf_client, autoscaling_client, rds_client
+
+    ssm_client = boto3.client('ssm')
+    cf_client = boto3.client('cloudformation')
+    autoscaling_client = boto3.client('autoscaling')
+    rds_client = boto3.client('rds')
 
 def delete_stack(stack_name):
     cf_client.delete_stack(
@@ -30,7 +52,9 @@ def delete_stack(stack_name):
     waiter.wait(StackName=stack_name)
 
 
-def ensure_stack(stack_name, template):
+def ensure_stack(stack_name, template, parameters):
+
+    parameters = [{'ParameterKey': k, 'ParameterValue': v} for k, v in parameters.items()]
 
     stacks = cf_client.describe_stacks(StackName=stack_name).get('Stacks')
     if len(stacks) == 0:
@@ -40,6 +64,7 @@ def ensure_stack(stack_name, template):
         r = cf_client.create_stack(
             StackName=stack_name,
             TemplateBody=template,
+            Parameters=parameters,
             TimeoutInMinutes=5,
             Capabilities=['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'],
         )
@@ -57,7 +82,7 @@ def ensure_stack(stack_name, template):
             r = cf_client.update_stack(
                 StackName=stack_name,
                 TemplateBody=template,
-                TimeoutInMinutes=5,
+                Parameters=parameters,
                 Capabilities=['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM'],
             )
 
@@ -153,7 +178,7 @@ def acquire_instance(stack_name):
 
         print('.', end='', flush=True)
         time.sleep(1)
-        
+
 
 def run_command(instance_id, commands, timeout_seconds = 60):
     response = ssm_client.send_command(
@@ -273,13 +298,13 @@ def close_tunnel_cli(proc):
     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
 
 
-def mysql_cli(local_port, db):
+def mysql_cli(local_port, username, password, database):
     cmdline = ['mysql',
         f'--host=127.0.0.1',
         f'--port={local_port}',
-        f'--user={db["username"]}',
-        f'--password={db["password"]}',
-        db["dbname"]
+        f'--user={username}',
+        f'--password={password}',
+        database
     ]
 
     filtered_cmdline = ['--password=...' if i.startswith('--password=') else i for i in cmdline]
@@ -292,6 +317,96 @@ def mysql_cli(local_port, db):
     subprocess.run(cmdline)
 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+def rds_id_from_host(host):
+    # <databaseid>.abcdefgwgxg2.eu-west-1.rds.amazonaws.com
+    match = re.search(r'^ (.*) \. [a-z0-9]+ \. [a-z0-9-]+ \.rds\.amazonaws\.com\.? $', host, re.VERBOSE)
+    return match.group(1) if match else None
+
+
+def is_rds_host(host):
+    return rds_id_from_host(host) is not None
+
+
+def resolve_custom_db_host(host):
+    import dns.resolver
+
+    answer = dns.resolver.resolve(host, 'CNAME')
+
+    # query() will throw when there are no records so we are checking for > 1 here really
+    if len(answer) != 1:
+        raise Exception(f'cannot resolve #{host} into RDS hostname')
+
+    return str(answer[0])
+
+
+def find_target_rds(host):
+    # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/rds/client/describe_db_instances.html
+
+    # We could iterate through all instances looking at their Endpoint.Address but lets save time using the fact that
+    # DB hostname looks like
+    #   <databaseid>.abcdefgwgxg2.eu-west-1.rds.amazonaws.com
+    rds_instance_id = rds_id_from_host(host)
+    if rds_instance_id is None:
+        raise Exception(f'{host} is not an RDS hostname')
+
+    response = rds_client.describe_db_instances(DBInstanceIdentifier=rds_instance_id)
+
+    if len(response['DBInstances']) != 1:
+        raise Exception(f'could not find RDS {rds_instance_id}')
+
+    return response['DBInstances'][0]
+
+
+def find_security_group(rds):
+    vpc_sgs = rds.get('VpcSecurityGroups')
+    if vpc_sgs is None or len(vpc_sgs) < 1:
+        raise Exception(f'RDS does no have VpcSecurityGroups')
+
+    if len(vpc_sgs) > 1:
+        raise Exception(f'multiple groups in RDS VpcSecurityGroups')
+
+    return vpc_sgs[0]['VpcSecurityGroupId']
+
+
+def find_subnet(rds):
+    subnets = rds['DBSubnetGroup']['Subnets']
+    subnets = [s for s in subnets if s.get('SubnetStatus') == 'Active']
+
+    # In my case I have got two subnets but in one of them proxy EC2 instance does not work.
+    # The only difference is that one of subnets has default route 0.0.0.0/0 via NAT
+    # and can talk to SSM and the other does not.
+    # So my filtering here just searches for a subnet with default route.
+    # Unfortunately, other setups can be completely different:
+    #   * default route is not really required
+    #   * ACL may also play a role
+    # But I have no idea how to make anything universal (or just "more universal" here).
+
+    ec2_client = boto3.client('ec2')
+
+    for subnet in subnets:
+
+        response = ec2_client.describe_route_tables(
+            Filters=[
+                {
+                    'Name': 'association.subnet-id',
+                    'Values': [ subnet['SubnetIdentifier'] ]
+                }
+            ]
+        )
+
+        for rt in response['RouteTables']:
+            for route in rt['Routes']:
+                if route['DestinationCidrBlock'] == '0.0.0.0/0':
+                    # This RT has a default route, use it
+                    return subnet['SubnetIdentifier']
+
+    raise Exception(f'unable to find a suitable subnet')
+
+
+def make_stack_id(group_id, subnet_id):
+    return re.sub(r'^sg-', '', group_id) + '-' + re.sub(r'^subnet-', '', subnet_id)
 
 
 ###########################################
@@ -337,30 +452,88 @@ def read_file_with_includes(file_name, indent = ''):
 
 def main():
 
-    stack_name = 'dmitry-test'
-
     parser = argparse.ArgumentParser(
         description='Command-line client for RDS'
     )
 
-    parser.add_argument('--secret', metavar='NAME', required=True,
+    parser.add_argument('--secret-id', metavar='VALUE', required=True,
                         help='name of a secret in AWS Secrets Manager with RDS credentials')
+    parser.add_argument('--group-id', metavar='VALUE',
+                        help='ID of a security group for proxy EC2 instance. When omitted, try to infer it from RDS')
+    parser.add_argument('--subnet-id', metavar='VALUE',
+                        help='ID of a subnet to place proxy EC2 instance into. When omitted, try to infer it from RDS')
     #parser.add_argument('args', nargs=argparse.REMAINDER,
     #                    help='additional arguments to pass to client')
 
     args = parser.parse_args()
 
-    print(f'Reading RDS credentials: {args.secret}')
-    db = json.loads(get_secret(args.secret))
+    init_clients()
+
+    secret_id = args.secret_id
+
+    print(f'Reading RDS credentials: {secret_id}')
+    db = json.loads(get_secret(secret_id))
+
+    # Make sure all the properties we need are present
+    for n in ['host', 'username', 'password']:
+        if db.get(n) is None:
+            raise Exception(f'{secret_id} does not contain {n} attribute')
+
+    db_host = db['host']
+    db_port = db.get('port', 3306)
+    db_username = db['username']
+    db_password = db['password']
+    db_name = db.get('dbname', 'mysql')
+    db_engine = db.get('engine')
+
+    if db_engine is not None and db_engine != 'mysql':
+        raise Exception(f'{secret_id} points to non-MySQL RDS')
+
+    print(f'DB host: {db_host}')
+
+    group_id = args.group_id
+    subnet_id = args.subnet_id
+
+    if group_id is None or subnet_id is None:
+        if not is_rds_host(db_host):
+            db_host = resolve_custom_db_host(db_host)
+            if not is_rds_host(db_host):
+                raise Exception(f'resolved {host} is still not an RDS hostname')
+
+        print(f'Resolved DB host: {db_host}')
+
+        rds = find_target_rds(db_host)
+
+        if group_id is None:
+            group_id = find_security_group(rds)
+            print(f'Security group: {group_id}')
+
+        if subnet_id is None:
+            subnet_id = find_subnet(rds)
+            print(f'Subnet: {subnet_id}')
+
+        print(f'Shortcut command:')
+        print(f'#   {sys.argv[0]} --secret-id {secret_id} --group-id {group_id} --subnet-id {subnet_id}')
+
 
     start = time.time()
     print('Deploying proxy service')
 
     template = read_file_with_includes('files/template.yaml')
 
-    print(template)
+    stack_id = make_stack_id(group_id, subnet_id)
+    stack_name = f'dmitry-test-{stack_id}'
 
-    ensure_stack(stack_name, template)
+    print(stack_name)
+    exit(1)
+    stack_params = {
+        'StackId': stack_id,
+        'SecurityGroupId': group_id,
+        'SubnetId': subnet_id,
+        'ImageId': DEFAULT_PROXY_AMI,
+    }
+
+    ensure_stack(stack_name, template, stack_params)
 
     print(f'Service deployed in {int(time.time() - start)}s')
 
@@ -376,9 +549,9 @@ def main():
     instance_id = acquire_instance(stack_name)
     print(f'Instance {instance_id} acquired in {int(time.time() - start)}s')
 
-    local_port, proc = open_tunnel_cli(instance_id, db['host'], 3306)
+    local_port, proc = open_tunnel_cli(instance_id, db_host, db_port)
 
-    mysql_cli(local_port, db)
+    mysql_cli(local_port, db_username, db_password, db_name)
 
     close_tunnel_cli(proc)
 
