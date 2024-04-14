@@ -143,7 +143,7 @@ def acquire_instance(stack_name):
     def announce_waiting(text):
         nonlocal last_announce
         if last_announce != text:
-            if last_announce != None:
+            if last_announce is not None:
                 print()
             print(f'{text}: ', end='', flush=True)
             last_announce = text
@@ -216,9 +216,6 @@ def run_command(instance_id, commands, timeout_seconds = 60):
         CommandId=command_id,
         InstanceId=instance_id
     )
-
-    print(response.get('Status'))
-    print(response.get('StandardOutputContent'))
 
 
 def ping_instance(instance_id):
