@@ -51,13 +51,22 @@ def delete_stack(stack_name):
     print("...waiting for stack to be deleted...")
     waiter.wait(StackName=stack_name)
 
+def get_stack(stack_name):
+    try:
+        stacks = cf_client.describe_stacks(StackName=stack_name).get('Stacks')
+        return stacks[0] if len(stacks) > 0 else None
+    except botocore.exceptions.ClientError as e:
+        if e.response['Error']['Message'] == f'Stack with id {stack_name} does not exist':
+            return None
+        raise
 
 def ensure_stack(stack_name, template, parameters):
 
     parameters = [{'ParameterKey': k, 'ParameterValue': v} for k, v in parameters.items()]
 
-    stacks = cf_client.describe_stacks(StackName=stack_name).get('Stacks')
-    if len(stacks) == 0:
+    stack = get_stack(stack_name)
+
+    if stack is None:
 
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/cloudformation/client/create_stack.html
 
@@ -101,7 +110,8 @@ def ensure_stack(stack_name, template, parameters):
     waiter.wait(
         StackName=stack_name,
         WaiterConfig={
-            'Delay': 1
+            'Delay': 1,
+            'MaxAttempts': 5 * 60,
         }
     )
 
@@ -524,8 +534,6 @@ def main():
     stack_id = make_stack_id(group_id, subnet_id)
     stack_name = f'dmitry-test-{stack_id}'
 
-    print(stack_name)
-    exit(1)
     stack_params = {
         'StackId': stack_id,
         'SecurityGroupId': group_id,
