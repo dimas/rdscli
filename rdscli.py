@@ -43,6 +43,7 @@ def init_clients():
     autoscaling_client = boto3.client('autoscaling')
     rds_client = boto3.client('rds')
 
+
 def delete_stack(stack_name):
     cf_client.delete_stack(
         StackName=stack_name
@@ -50,6 +51,7 @@ def delete_stack(stack_name):
     waiter = cf_client.get_waiter('stack_delete_complete')
     print("...waiting for stack to be deleted...")
     waiter.wait(StackName=stack_name)
+
 
 def get_stack(stack_name):
     try:
@@ -59,6 +61,7 @@ def get_stack(stack_name):
         if e.response['Error']['Message'] == f'Stack with id {stack_name} does not exist':
             return None
         raise
+
 
 def ensure_stack(stack_name, template, parameters):
 
@@ -532,7 +535,7 @@ def main():
     template = read_file_with_includes('files/template.yaml')
 
     stack_id = make_stack_id(group_id, subnet_id)
-    stack_name = f'dmitry-test-{stack_id}'
+    stack_name = f'tcp-proxy-{stack_id}'
 
     stack_params = {
         'StackId': stack_id,
