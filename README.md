@@ -43,9 +43,9 @@ You will need:
 
 The tool is run with
 ```sh
-python3 rdscli.py --secret=...
+python3 rdscli.py --secret-id=...
 ```
-There `--secret` option gives a name of secret in AWS Secrets Manager that contains RDS credentials.
+There `--secret-id` option gives a name of secret in AWS Secrets Manager that contains RDS credentials.
 
 The tool will use your default AWS credentials - what it will be depends on what environment variables you have (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) or if you have a default profile in `~/.aws/credentials`
 
@@ -53,7 +53,32 @@ You can always specify a profile you want to use with:
 ```sh
 AWS_PROFILE=my_profile python3 rdscli.py ...
 ```
+
+## Parameters
+
+The tool needs to know two things in order to launch EC2 instance: security group and a subnet to place the instance into.
+The subnet and group should allow the EC2 instance to talk to both RDS database and Amazon SSM control infrastructure.
+
+You can explicitly provide these parameters via the command line:
+
+```sh
+python3 rdscli.py --secret-id=... --group-id=... --subnet-id=...
+```
+
+If you omit these parameters, `rdscli` will try to guess their values. That means fetching RDS configuration, seeing what
+security groups and subnets are there and trying to guess which one to use.
+That piece of logic is quite dumb so it may not work for you given how different and complex your VPC network setup can be.
+There also may be network ACLs that will prevent the EC2 instance from communicating with SSM infrastructure even
+if correct subnet/group is chosen.
+
+There is, unfortunately, no remedy for that - if the tool cannot automatically find working subnet and group, you options are:
+* either give the tool suitable existing subnet/group that should work
+* or create new for the purpose
+* put their creation into CloudFormation template (but you may need to extend it with additional parameters like VPC ID for that)
+* improve the code that figures out correct subnet/group from the environment
+
 ## RDS credentials
+
 The secret in Secrets Manager with RDS credentials is expected to be a JSON object with this format:
 ```json
 {
@@ -65,7 +90,23 @@ The secret in Secrets Manager with RDS credentials is expected to be a JSON obje
     "port": "3306"
 }
 ```
-which is a standard format for RDS secrets. Note that `engine` and `port` are currently not required and ignored.
+which is a standard format for RDS secrets.
+
+The `port` is not required - 3306 is assumed when it is absent. Also, `engine` is not needed but if present it is checked to be "mysql" or the tool will abort.
+
+## Cleanup
+
+The EC2 instance is automatically terminated when not in use for some time. If you want to completely remove the tool's cloud
+infrastructure, just detele its Cloud Watch stack (named `tcp-proxy-<unique ID>`) as everything is contained within that stack.
+
+TODO: maybe add a command line option to the tool to remove cloud infrastructure.
+
+## Permissions
+
+Deployment of the cloud infrastructure requires user with lots of permissions. As one of the resources created is an IAM role,
+it needs quite high admin-like access level.
+
+However, after the initial deployment, significantly less permissions is needed to initiate the TCP tunnel.
 
 ## Implementation
 
