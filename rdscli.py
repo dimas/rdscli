@@ -306,12 +306,16 @@ def close_tunnel_cli(proc):
     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
 
 
-def mysql_cli(local_port, username, password, database):
+# TODO
+# botocore.exceptions.ClientError: An error occurred (ValidationError) when calling the UpdateStack operation: Stack:arn:aws:cloudformation:eu-west-1:000000000000:stack/tcp-proxy-5f7ede3a-325b8157/932764c0-1e89-11ef-a547-026fe946cb4b is in ROLLBACK_FAILED state and can not be updated.
+
+def mysql_cli(local_port, username, password, database, args):
     cmdline = ['mysql',
         f'--host=127.0.0.1',
         f'--port={local_port}',
         f'--user={username}',
         f'--password={password}',
+        *args,
         database
     ]
 
@@ -466,14 +470,20 @@ def main():
 
     parser.add_argument('--secret-id', metavar='VALUE', required=True,
                         help='name of a secret in AWS Secrets Manager with RDS credentials')
+    parser.add_argument('--instance-id', metavar='VALUE',
+                        help='optional ID of an EC2 instance that will be used for tunnelling trafffic.')
     parser.add_argument('--group-id', metavar='VALUE',
                         help='ID of a security group for proxy EC2 instance. When omitted, try to infer it from RDS')
     parser.add_argument('--subnet-id', metavar='VALUE',
                         help='ID of a subnet to place proxy EC2 instance into. When omitted, try to infer it from RDS')
-    #parser.add_argument('args', nargs=argparse.REMAINDER,
-    #                    help='additional arguments to pass to client')
+    parser.add_argument('args', nargs=argparse.REMAINDER,
+                        help='additional arguments to pass to client')
 
     args = parser.parse_args()
+
+    mysql_args = args.args
+    if mysql_args and mysql_args[0] == '--':
+        mysql_args = mysql_args[1:]
 
     init_clients()
 
@@ -499,65 +509,70 @@ def main():
 
     print(f'DB host: {db_host}')
 
-    group_id = args.group_id
-    subnet_id = args.subnet_id
+    instance_id = args.instance_id
+    if instance_id is None:
+        # Instance ID was not provided, need to deploy our own
 
-    if group_id is None or subnet_id is None:
-        if not is_rds_host(db_host):
-            db_host = resolve_custom_db_host(db_host)
+        group_id = args.group_id
+        subnet_id = args.subnet_id
+
+        if group_id is None or subnet_id is None:
             if not is_rds_host(db_host):
-                raise Exception(f'resolved {host} is still not an RDS hostname')
+                db_host = resolve_custom_db_host(db_host)
+                if not is_rds_host(db_host):
+                    raise Exception(f'resolved {host} is still not an RDS hostname')
 
-        print(f'Resolved DB host: {db_host}')
+            print(f'Resolved DB host: {db_host}')
 
-        rds = find_target_rds(db_host)
+            rds = find_target_rds(db_host)
 
-        if group_id is None:
-            group_id = find_security_group(rds)
-            print(f'Security group: {group_id}')
+            if group_id is None:
+                group_id = find_security_group(rds)
+                print(f'Security group: {group_id}')
 
-        if subnet_id is None:
-            subnet_id = find_subnet(rds)
-            print(f'Subnet: {subnet_id}')
+            if subnet_id is None:
+                subnet_id = find_subnet(rds)
+                print(f'Subnet: {subnet_id}')
 
-        print(f'Shortcut command:')
-        print(f'#   {sys.argv[0]} --secret-id {secret_id} --group-id {group_id} --subnet-id {subnet_id}')
+            print(f'Shortcut command:')
+            print(f'#   {sys.argv[0]} --secret-id {secret_id} --group-id {group_id} --subnet-id {subnet_id}')
 
 
-    start = time.time()
-    print('Deploying proxy service')
+        start = time.time()
+        print('Deploying proxy service')
 
-    template = read_file_with_includes('files/template.yaml')
+        template = read_file_with_includes('files/template.yaml')
 
-    stack_id = make_stack_id(group_id, subnet_id)
-    stack_name = f'tcp-proxy-{stack_id}'
+        stack_id = make_stack_id(group_id, subnet_id)
+        stack_name = f'tcp-proxy-{stack_id}'
 
-    stack_params = {
-        'StackId': stack_id,
-        'SecurityGroupId': group_id,
-        'SubnetId': subnet_id,
-        'ImageId': DEFAULT_PROXY_AMI,
-    }
+        stack_params = {
+            'StackId': stack_id,
+            'SecurityGroupId': group_id,
+            'SubnetId': subnet_id,
+            'ImageId': DEFAULT_PROXY_AMI,
+        }
 
-    ensure_stack(stack_name, template, stack_params)
+        ensure_stack(stack_name, template, stack_params)
 
-    print(f'Service deployed in {int(time.time() - start)}s')
+        print(f'Service deployed in {int(time.time() - start)}s')
 
-    outputs = get_stack_outputs(stack_name)
+        outputs = get_stack_outputs(stack_name)
 
-    control_function = find_output(outputs, 'ControlLambdaFunction')
+        control_function = find_output(outputs, 'ControlLambdaFunction')
 
-    print('Requesting proxy activation')
-    invoke_function(control_function, {'Action': 'activate'})
+        print('Requesting proxy activation')
+        invoke_function(control_function, {'Action': 'activate'})
 
-    start = time.time()
+        start = time.time()
 
-    instance_id = acquire_instance(stack_name)
-    print(f'Instance {instance_id} acquired in {int(time.time() - start)}s')
+        instance_id = acquire_instance(stack_name)
+        print(f'Instance {instance_id} acquired in {int(time.time() - start)}s')
+
 
     local_port, proc = open_tunnel_cli(instance_id, db_host, db_port)
 
-    mysql_cli(local_port, db_username, db_password, db_name)
+    mysql_cli(local_port, db_username, db_password, db_name, mysql_args)
 
     close_tunnel_cli(proc)
 
