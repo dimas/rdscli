@@ -21,12 +21,11 @@ on demand.
 `rdscli` is a helper tool that builds a TCP tunnel into AWS VPC to allow locally running `mysql` client reach an RDS running in that VPC.
 When tunnel is built, `rdscli` starts `mysql` client locally connecting it to the remote database.
 
-The tool can either use an existing EC2 instance to forward RDS traffic through it, or it can deploy its own EC2 instance. In the later case. In the later case, the tool then monitors activity of that instance. When instance is idle for certain time, it is terminated. Next time `rdscli` is run,
-depending on the state of the proxy infrastructure, it will either re-use already available instance, or start a new one.
+The tool can either use an existing EC2 instance to forward RDS traffic through it, or it can deploy its own EC2 instance. In the later case, the tool then monitors activity of that instance. When instance is idle for certain time, it is automatically terminated. Next time `rdscli` is run, depending on the state of the proxy infrastructure, it will either re-use already available instance, or start a new one.
 
 Approximate time needed for `mysql` cient to connects:
 * 2-3 minutes when `rdscli` is used for the first time and has to deploy the entire infrastructure. Or when infrastructure was removed and needs to be redeployed.
-* about 30 seconds when the infrastructure is already in place and only EC2 instance needs to be launched (because the last one was terminated for inactivity)
+* about 30 seconds when the infrastructure is already in place and only EC2 instance needs to be launched (because the previous one was terminated for inactivity)
 * under 5 seconds if there is already an EC2 instance running (because `rdscli` was used recently) or you provide it with pre-existing instance
 
 ## Requirements
@@ -49,20 +48,20 @@ There `--secret-id` option gives a name of secret in AWS Secrets Manager that co
 
 The tool will use your default AWS credentials - what it will be depends on what environment variables you have (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) or if you have a default profile in `~/.aws/credentials`
 
-You can always select a profile you want to use with:
+You can always explicitly select a profile you want to use by setting environment variable in the same command:
 ```sh
 AWS_PROFILE=my_profile python3 rdscli.py ...
 ```
 
 ## Parameters
 
-If you already have an EC2 instance that has SSM agent installed and has connectivity to the RDS, you can just give ID of that instance to `rdscli` and it will be used for tunnelling traffic without any need to deploy anything else.
+If you already have an EC2 instance that has SSM agent installed and has connectivity to the RDS, you can just give ID of that instance to `rdscli` and it will be used for tunnelling traffic without need to deploy anything else.
 
 ```sh
 python3 rdscli.py --secret-id=... --instance-id=...
 ```
 
-This is, however, quite a niche use case - you probably won't be using this tool at all if you had that jump host readily available. So when `--instance-id` is not specified, `rdscli` will create its own temporary EC2 proxy instance.
+This is quick but it is quite a niche use case - you probably won't be using this tool at all if you already had that jump host readily available. So when `--instance-id` is not specified, `rdscli` will create its own temporary EC2 proxy instance.
 
 The tool needs to know two things in order to launch EC2 instance: security group and a subnet to place the instance into.
 The subnet and group should allow the EC2 instance to talk to both RDS database and Amazon SSM control infrastructure.
@@ -75,7 +74,7 @@ python3 rdscli.py --secret-id=... --group-id=... --subnet-id=...
 
 If you omit these parameters, `rdscli` will try to guess their values. That means fetching RDS configuration, checking what
 security groups and subnets are there and trying to guess which one to use.
-That piece of logic is quite dumb so it may not work for you given how different and complex your VPC network setup can be.
+That piece of logic is quite dumb so it may not work for you given how different and how complex your VPC network setup can be.
 There also may be network ACLs that will prevent the EC2 instance from communicating with SSM infrastructure even
 if correct subnet/group is chosen.
 
@@ -104,7 +103,7 @@ The `port` is not required - 3306 is assumed when it is absent. Also, `engine` i
 
 ## Passing command-line options to RDS client
 
-If you add a bare `--` to the command line, everything after it will be passed to the `mysql` program in addition options automatically added by `rdscli` (which are host, port, credentials and database name). This can be used for example to execute a single command:
+If you add a bare `--` to the command line, everything after it will be passed to the `mysql` program in addition to options added by `rdscli` automatically (which are host, port, credentials and database name). This can be used to execute a single command for example:
 
 ```sh
 python3 rdscli.py --secret-id=... -- -B -e 'SELECT COUNT(*) FROM table'
