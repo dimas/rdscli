@@ -11,6 +11,7 @@ cat <<'EOF'
 EOF
 ) > $MONITOR_SCRIPT
 
+sed -i 's/tcp-proxy-control/tcp-proxy-control-${StackId}/' $MONITOR_SCRIPT
 
 if [ -f $MONITOR_SCRIPT ]; then
     chmod +x $MONITOR_SCRIPT

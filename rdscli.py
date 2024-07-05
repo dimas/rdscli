@@ -91,7 +91,7 @@ def ensure_stack(stack_name, template, parameters):
         print(f'Stack {stack_name} already exists, updating')
 
         try:
-            r = cf_client.update_stack(
+            cf_client.update_stack(
                 StackName=stack_name,
                 TemplateBody=template,
                 Parameters=parameters,

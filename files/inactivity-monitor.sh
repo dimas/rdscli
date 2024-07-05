@@ -6,6 +6,8 @@
 # when something opens SSM session. This EC2 instance does not have other things to do anyway
 # so this kind of polling should not be a big deal.
 
+control_function="tcp-proxy-control"
+
 last_report_sessions=0
 
 while true
@@ -46,7 +48,7 @@ do
 
         aws --region="$region" \
             lambda invoke \
-            --function-name sql-proxy-control \
+            --function-name $control_function \
             --payload "{\"Action\": \"report\", \"ActiveSessions\": $sessions, \"active\": $active}" \
             /dev/null
     fi
