@@ -33,8 +33,6 @@ Resources:
           - !Ref SecurityGroupId
         IamInstanceProfile:
           Arn: !GetAtt ProxyInstanceProfile.Arn
-        InstanceMarketOptions:
-          MarketType: spot
         InstanceType: t3a.nano
 
 #        TagSpecifications:
@@ -171,9 +169,20 @@ Resources:
   ProxyAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      LaunchTemplate:
-        LaunchTemplateId: !Ref ProxyLaunchTemplate
-        Version: !GetAtt ProxyLaunchTemplate.LatestVersionNumber
+      MixedInstancesPolicy:
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref ProxyLaunchTemplate
+            Version: !GetAtt ProxyLaunchTemplate.LatestVersionNumber
+          Overrides:
+          - InstanceType: t3a.nano
+          - InstanceType: t3.nano
+          - InstanceType: t2.nano
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity: 0
+          SpotAllocationStrategy: lowest-price
+
       MinSize: 0
       DesiredCapacity: 1
       MaxSize: 1
